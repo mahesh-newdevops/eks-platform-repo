@@ -123,7 +123,33 @@ jobs:
       - name: Cleanup remote Terraform state (S3 & DynamoDB)
         if: inputs.action == 'destroy' && inputs.delete_state == 'true' && inputs.delete_state_confirm == 'CONFIRM'
         run: |
-          # Delete all objects in the S3 backend bucket and then delete the bucket and DynamoDB table
-          aws s3 rm s3://eks-terraform-state-prod --recursive || true
-          aws s3api delete-bucket --bucket eks-terraform-state-prod --region ap-south-1 || true
-          aws dynamodb delete-table --table-name terraform-locks || true
+          set -euo pipefail
+          BUCKET=eks-terraform-state-prod
+          REGION=us-west-2
+          TABLE=terraform-locks
+
+          echo "Installing jq (if missing)"
+          sudo apt-get update && sudo apt-get install -y jq || true
+
+          echo "Checking if bucket has versioning enabled"
+          VER_STATUS=$(aws s3api get-bucket-versioning --bucket "$BUCKET" --region "$REGION" --output text --query 'Status' || echo "")
+          if [ "$VER_STATUS" = "Enabled" ] || [ "$VER_STATUS" = "Suspended" ]; then
+            echo "Bucket versioning enabled — deleting versions and delete markers"
+            aws s3api list-object-versions --bucket "$BUCKET" --region "$REGION" --output json \
+              | jq -c '.Versions[]?,.DeleteMarkers[]?' \
+              | while read item; do
+                  KEY=$(echo "$item" | jq -r '.Key')
+                  VER=$(echo "$item" | jq -r '.VersionId')
+                  echo "Deleting $KEY (version: $VER)"
+                  aws s3api delete-object --bucket "$BUCKET" --key "$KEY" --version-id "$VER" --region "$REGION" || true
+                done
+          fi
+
+          echo "Deleting remaining objects"
+          aws s3 rm s3://$BUCKET --recursive --region $REGION || true
+
+          echo "Deleting bucket"
+          aws s3api delete-bucket --bucket $BUCKET --region $REGION || true
+
+          echo "Deleting DynamoDB lock table (if exists)"
+          aws dynamodb delete-table --table-name $TABLE --region $REGION || true
