@@ -64,6 +64,19 @@ jobs:
       - name: Verify AWS identity
         run: aws sts get-caller-identity
 
+      - name: Resolve backend names
+        run: |
+          set -euo pipefail
+
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [ "${BUCKET_NAME}" = "eks-terraform-state-prod" ]; then
+            BUCKET_NAME="eks-terraform-state-${AWS_ACCOUNT_ID}-${BACKEND_REGION}"
+          fi
+
+          echo "BUCKET_NAME=${BUCKET_NAME}" >> "${GITHUB_ENV}"
+          echo "Using backend bucket: ${BUCKET_NAME}"
+          echo "Using lock table: ${DYNAMODB_TABLE}"
+
       - name: Create S3 backend
         if: inputs.action == 'create'
         run: |

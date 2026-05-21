@@ -77,6 +77,13 @@ jobs:
         run: |
           echo "Verifying assumed role..."
           aws sts get-caller-identity
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if [ "${TF_STATE_BUCKET}" = "eks-terraform-state-prod" ]; then
+            TF_STATE_BUCKET="eks-terraform-state-${AWS_ACCOUNT_ID}-${AWS_REGION}"
+          fi
+          echo "TF_STATE_BUCKET=${TF_STATE_BUCKET}" >> "${GITHUB_ENV}"
+          echo "Using backend bucket: ${TF_STATE_BUCKET}"
+          echo "Using lock table: ${TF_LOCK_TABLE}"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
