@@ -1,0 +1,129 @@
+name: EKS Platform Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
+      environment:
+        description: 'Environment to deploy (dev|prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+      delete_state:
+        description: 'When destroying, also delete remote Terraform state (S3 & DynamoDB)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      delete_state_confirm:
+        description: "Type 'CONFIRM' to allow remote state deletion when delete_state=true"
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      TF_VAR_environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORMAWS }}
+          aws-region: ap-south-1
+          role-session-name: github-actions-eks
+
+      - name: Verify AWS identity
+        run: |
+          echo "Verifying assumed role..."
+          aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init & Validate
+        working-directory: terraform
+        run: |
+          terraform init -reconfigure
+          terraform validate
+
+      - name: Terraform Plan & Apply
+        if: inputs.action == 'apply'
+        working-directory: terraform
+        run: |
+          terraform plan -out=tfplan
+          terraform apply -auto-approve tfplan
+
+      - name: Configure kubectl
+        if: inputs.action == 'apply'
+        working-directory: terraform
+        run: |
+          CLUSTER_NAME=$(terraform output -raw cluster_name)
+          aws eks update-kubeconfig --region ap-south-1 --name ${CLUSTER_NAME}
+
+      - name: Deploy Karpenter NodePool
+        if: inputs.action == 'apply'
+        run: |
+          kubectl apply -f kubernetes/karpenter/
+
+      - name: Deploy Monitoring
+        if: inputs.action == 'apply'
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+
+          helm upgrade --install kube-prometheus-stack \
+          prometheus-community/kube-prometheus-stack \
+          -n monitoring \
+          --create-namespace
+
+      - name: Deploy Microservices
+        if: inputs.action == 'apply'
+        run: |
+          kubectl apply -f kubernetes/storage/storage-class.yaml || true
+          kubectl apply -f kubernetes/microservices/user-service/statefulset.yaml
+          kubectl apply -f kubernetes/microservices/payment-service/statefulset.yaml
+          kubectl apply -f kubernetes/microservices/order-service/statefulset.yaml
+
+      - name: Wait for StatefulSets to be ready
+        if: inputs.action == 'apply'
+        run: |
+          echo "Waiting for user-service StatefulSet..."
+          kubectl rollout status statefulset/user-service -n user-service --timeout=10m
+          echo "Waiting for payment-service StatefulSet..."
+          kubectl rollout status statefulset/payment-service -n payment-service --timeout=10m
+          echo "Waiting for order-service StatefulSet..."
+          kubectl rollout status statefulset/order-service -n order-service --timeout=10m
+
+      - name: Terraform Destroy
+        if: inputs.action == 'destroy'
+        working-directory: terraform
+        run: |
+          terraform init -reconfigure
+          terraform destroy -auto-approve
+
+      - name: Cleanup remote Terraform state (S3 & DynamoDB)
+        if: inputs.action == 'destroy' && inputs.delete_state == 'true' && inputs.delete_state_confirm == 'CONFIRM'
+        run: |
+          # Delete all objects in the S3 backend bucket and then delete the bucket and DynamoDB table
+          aws s3 rm s3://eks-terraform-state-prod --recursive || true
+          aws s3api delete-bucket --bucket eks-terraform-state-prod --region ap-south-1 || true
+          aws dynamodb delete-table --table-name terraform-locks || true

@@ -1,0 +1,90 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+.terraform.lock.hcl
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.code-workspace
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Git
+.git/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+
+# Local environment
+.env
+.env.local
+
+# Kubernetes
+kubeconfig
+kubeconfig.yaml
+*.kubeconfig
+helm-values/
+charts/
+
+# AWS
+.aws/
+aws-credentials.json
+
+# Certificates & Keys
+*.pem
+*.key
+*.crt
+*.pfx
+
+# Backups & Temporaries
+*.bak
+*.backup
+*.tmp
+*.swp
+*~
+.#*
+
+# Distribution & Compiled Files
+dist/
+build/
+*.zip
+*.tar.gz
+*.tgz
+
+# Cache
+.cache/
+.helm/
+
