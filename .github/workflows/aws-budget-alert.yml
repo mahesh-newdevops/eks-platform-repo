@@ -1,0 +1,176 @@
+name: AWS Cost Budget Alert
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
+      budget_name:
+        description: 'AWS Budget name'
+        required: true
+        default: 'monthly-platform-cost-budget'
+        type: string
+      monthly_limit_usd:
+        description: 'Monthly budget limit in USD'
+        required: true
+        default: '100'
+        type: string
+      alert_email:
+        description: 'Email address to receive budget alerts'
+        required: true
+        type: string
+      aws_region:
+        description: 'AWS region used for AWS CLI authentication'
+        required: true
+        default: 'us-east-1'
+        type: string
+      destroy_confirm:
+        description: "Type 'CONFIRM' to allow destroy"
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      BUDGET_NAME: ${{ inputs.budget_name }}
+      MONTHLY_LIMIT_USD: ${{ inputs.monthly_limit_usd }}
+      ALERT_EMAIL: ${{ inputs.alert_email }}
+      AWS_REGION: ${{ inputs.aws_region }}
+    steps:
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORMAWS }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-actions-budget-alert
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+
+          if ! [[ "${MONTHLY_LIMIT_USD}" =~ ^[0-9]+([.][0-9]{1,2})?$ ]]; then
+            echo "monthly_limit_usd must be a positive number, for example 50 or 100.00."
+            exit 1
+          fi
+
+          if ! [[ "${ALERT_EMAIL}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
+            echo "alert_email must be a valid email address."
+            exit 1
+          fi
+
+      - name: Create or update monthly cost budget
+        if: inputs.action == 'apply'
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          cat > budget.json <<EOF
+          {
+            "BudgetName": "${BUDGET_NAME}",
+            "BudgetLimit": {
+              "Amount": "${MONTHLY_LIMIT_USD}",
+              "Unit": "USD"
+            },
+            "TimeUnit": "MONTHLY",
+            "BudgetType": "COST",
+            "CostTypes": {
+              "IncludeTax": true,
+              "IncludeSubscription": true,
+              "UseBlended": false,
+              "IncludeRefund": false,
+              "IncludeCredit": false,
+              "IncludeUpfront": true,
+              "IncludeRecurring": true,
+              "IncludeOtherSubscription": true,
+              "IncludeSupport": true,
+              "IncludeDiscount": true,
+              "UseAmortized": false
+            }
+          }
+          EOF
+
+          if aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" >/dev/null 2>&1; then
+            aws budgets update-budget \
+              --account-id "${ACCOUNT_ID}" \
+              --new-budget file://budget.json
+          else
+            aws budgets create-budget \
+              --account-id "${ACCOUNT_ID}" \
+              --budget file://budget.json
+          fi
+
+          create_notification() {
+            local notification_type="$1"
+            local threshold="$2"
+
+            cat > notification.json <<EOF
+          {
+            "NotificationType": "${notification_type}",
+            "ComparisonOperator": "GREATER_THAN",
+            "Threshold": ${threshold},
+            "ThresholdType": "PERCENTAGE"
+          }
+          EOF
+
+            aws budgets delete-notification \
+              --account-id "${ACCOUNT_ID}" \
+              --budget-name "${BUDGET_NAME}" \
+              --notification file://notification.json >/dev/null 2>&1 || true
+
+            aws budgets create-notification \
+              --account-id "${ACCOUNT_ID}" \
+              --budget-name "${BUDGET_NAME}" \
+              --notification file://notification.json \
+              --subscribers "SubscriptionType=EMAIL,Address=${ALERT_EMAIL}"
+          }
+
+          create_notification ACTUAL 10
+          create_notification ACTUAL 20
+          create_notification FORECASTED 100
+
+          cat <<EOF
+
+          Budget alert configured.
+          Budget: ${BUDGET_NAME}
+          Limit:  ${MONTHLY_LIMIT_USD} USD per month
+          Email:  ${ALERT_EMAIL}
+
+          AWS may send a confirmation email before notifications are delivered.
+          EOF
+
+      - name: Require destroy confirmation
+        if: inputs.action == 'destroy' && inputs.destroy_confirm != 'CONFIRM'
+        run: |
+          echo "Destroy was requested, but destroy_confirm was not CONFIRM."
+          exit 1
+
+      - name: Delete monthly cost budget
+        if: inputs.action == 'destroy' && inputs.destroy_confirm == 'CONFIRM'
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          if aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" >/dev/null 2>&1; then
+            aws budgets delete-budget \
+              --account-id "${ACCOUNT_ID}" \
+              --budget-name "${BUDGET_NAME}"
+            echo "Deleted budget: ${BUDGET_NAME}"
+          else
+            echo "Budget does not exist: ${BUDGET_NAME}"
+          fi
