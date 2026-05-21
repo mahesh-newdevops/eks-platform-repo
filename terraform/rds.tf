@@ -14,7 +14,7 @@ data "aws_subnets" "default" {
 
 # Security Group for RDS
 resource "aws_security_group" "rds" {
-  name        = "rds-postgres-sg"
+  name        = "${local.resource_prefix}-rds-postgres-sg"
   description = "Security group for RDS PostgreSQL"
   vpc_id      = data.aws_vpc.default.id
 
@@ -35,60 +35,62 @@ resource "aws_security_group" "rds" {
   }
 
   tags = {
-    Name = "rds-postgres-sg"
+    Name        = "${local.resource_prefix}-rds-postgres-sg"
+    Environment = local.environment
   }
 }
 
 # DB Subnet Group
 resource "aws_db_subnet_group" "rds" {
-  name       = "rds-subnet-group"
+  name       = "${local.resource_prefix}-rds-subnet-group"
   subnet_ids = data.aws_subnets.default.ids
 
   tags = {
-    Name = "rds-subnet-group"
+    Name        = "${local.resource_prefix}-rds-subnet-group"
+    Environment = local.environment
   }
 }
 
 # RDS PostgreSQL Instance
 resource "aws_db_instance" "postgres" {
-  identifier            = "microservices-db"
-  engine               = "postgres"
-  engine_version       = "15.3"
-  instance_class       = var.rds_instance_class
-  allocated_storage    = var.rds_allocated_storage
-  storage_type         = "gp3"
-  storage_encrypted    = true
-  
-  db_name              = var.rds_db_name
-  username             = var.rds_username
-  password             = var.rds_password
-  
+  identifier        = local.rds_name
+  engine            = "postgres"
+  engine_version    = "15.3"
+  instance_class    = var.rds_instance_class
+  allocated_storage = var.rds_allocated_storage
+  storage_type      = "gp3"
+  storage_encrypted = true
+
+  db_name  = var.rds_db_name
+  username = var.rds_username
+  password = var.rds_password
+
   db_subnet_group_name   = aws_db_subnet_group.rds.name
   vpc_security_group_ids = [aws_security_group.rds.id]
-  
-  multi_az               = false
-  publicly_accessible    = false
-  skip_final_snapshot    = var.environment == "dev" ? true : false
-  final_snapshot_identifier = var.environment == "dev" ? null : "microservices-db-final-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
-  
+
+  multi_az                  = false
+  publicly_accessible       = false
+  skip_final_snapshot       = local.environment == "dev" ? true : false
+  final_snapshot_identifier = local.environment == "dev" ? null : "${local.rds_name}-final-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+
   backup_retention_period = var.backup_retention_days
-  backup_window          = "03:00-04:00"
-  maintenance_window     = "mon:04:00-mon:05:00"
-  
+  backup_window           = "03:00-04:00"
+  maintenance_window      = "mon:04:00-mon:05:00"
+
   enabled_cloudwatch_logs_exports = ["postgresql"]
-  deletion_protection     = var.environment == "prod" ? true : false
-  
-  parameter_group_name   = aws_db_parameter_group.postgres.name
-  
+  deletion_protection             = var.rds_deletion_protection
+
+  parameter_group_name = aws_db_parameter_group.postgres.name
+
   tags = {
-    Name        = "microservices-db"
-    Environment = var.environment
+    Name        = local.rds_name
+    Environment = local.environment
   }
 }
 
 # DB Parameter Group for PostgreSQL
 resource "aws_db_parameter_group" "postgres" {
-  name   = "microservices-postgres-params"
+  name   = "${local.resource_prefix}-postgres-params"
   family = "postgres15"
 
   parameter {
@@ -102,7 +104,8 @@ resource "aws_db_parameter_group" "postgres" {
   }
 
   tags = {
-    Name = "microservices-postgres-params"
+    Name        = "${local.resource_prefix}-postgres-params"
+    Environment = local.environment
   }
 }
 

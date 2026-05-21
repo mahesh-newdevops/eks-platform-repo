@@ -36,17 +36,23 @@ output "karpenter_iam_role_name" {
   value       = module.karpenter.iam_role_name
 }
 
+output "karpenter_node_iam_role_name" {
+  description = "Name of the Karpenter node IAM role used by EC2NodeClass"
+  value       = module.karpenter.node_iam_role_name
+}
+
 # Access Configuration
 output "configure_kubectl" {
   description = "Command to configure kubectl"
-  value       = "aws eks update-kubeconfig --region ap-south-1 --name ${module.eks.cluster_name}"
+  value       = "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name}"
 }
 
 output "deployment_summary" {
   description = "Summary of deployed components"
   value = {
-    cluster_name     = module.eks.cluster_name
-    region           = "ap-south-1"
+    cluster_name = module.eks.cluster_name
+    environment  = local.environment
+    region       = var.region
     kubernetes_addons = [
       "vpc-cni",
       "eks-pod-identity-agent",
@@ -57,7 +63,9 @@ output "deployment_summary" {
       "aws-load-balancer-controller",
       "argocd",
       "prometheus",
-      "loki"
+      "loki",
+      "linkerd",
+      "jaeger"
     ]
   }
 }

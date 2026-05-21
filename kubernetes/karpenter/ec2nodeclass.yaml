@@ -6,15 +6,15 @@ metadata:
 spec:
   amiFamily: AL2023
 
-  role: KarpenterNodeRole-prod-eks
+  role: __KARPENTER_NODE_ROLE__
 
   subnetSelectorTerms:
     - tags:
-        karpenter.sh/discovery: prod-eks
+        karpenter.sh/discovery: __KARPENTER_DISCOVERY__
 
   securityGroupSelectorTerms:
     - tags:
-        karpenter.sh/discovery: prod-eks
+        karpenter.sh/discovery: __KARPENTER_DISCOVERY__
 
   amiSelectorTerms:
     - alias: al2023@latest

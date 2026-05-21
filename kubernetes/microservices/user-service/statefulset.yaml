@@ -164,7 +164,6 @@ metadata:
   labels:
     app: user-service
 spec:
-  serviceName: user-service
   selector:
     app: user-service
   ports:

@@ -1,11 +1,23 @@
 module "eks" {
   source = "terraform-aws-modules/eks/aws"
 
-  name               = "my-cluster"
-  kubernetes_version = "1.27"
-  # Let the EKS module create a VPC and subnets by default
+  name               = local.cluster_name
+  kubernetes_version = var.kubernetes_version
+  vpc_id             = data.aws_vpc.default.id
+  subnet_ids         = data.aws_subnets.default.ids
+
+  endpoint_public_access                   = true
+  enable_cluster_creator_admin_permissions = true
 
   addons = {
+    coredns = {
+      most_recent = true
+    }
+
+    kube-proxy = {
+      most_recent = true
+    }
+
     vpc-cni = {}
 
     eks-pod-identity-agent = {}
@@ -15,16 +27,38 @@ module "eks" {
     }
   }
 
+  eks_managed_node_groups = {
+    default = {
+      instance_types = ["t3.medium"]
+      min_size       = 1
+      max_size       = 3
+      desired_size   = 2
+    }
+  }
+
+  node_security_group_tags = {
+    "karpenter.sh/discovery" = local.cluster_name
+  }
+
   tags = {
-    Environment = "prod"
-    Terraform   = "true"
+    Environment              = local.environment
+    Terraform                = "true"
+    "karpenter.sh/discovery" = local.cluster_name
   }
 }
 
 module "karpenter" {
   source = "terraform-aws-modules/eks/aws//modules/karpenter"
 
-  cluster_name = module.eks.cluster_name
+  cluster_name                  = module.eks.cluster_name
+  node_iam_role_name            = "KarpenterNodeRole-${local.cluster_name}"
+  node_iam_role_use_name_prefix = false
+  queue_name                    = "Karpenter-${local.cluster_name}"
+
+  tags = {
+    Environment = local.environment
+    Terraform   = "true"
+  }
 }
 
 resource "helm_release" "karpenter" {
@@ -41,11 +75,17 @@ resource "helm_release" "karpenter" {
     <<EOF
 settings:
   clusterName: ${module.eks.cluster_name}
+  interruptionQueue: ${module.karpenter.queue_name}
 
 serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: ${module.karpenter.iam_role_arn}
 EOF
+  ]
+
+  depends_on = [
+    module.eks,
+    module.karpenter
   ]
 }
 
@@ -60,6 +100,10 @@ resource "helm_release" "alb_controller" {
 clusterName: ${module.eks.cluster_name}
 EOF
   ]
+
+  depends_on = [
+    module.eks
+  ]
 }
 
 resource "helm_release" "argocd" {
@@ -68,6 +112,10 @@ resource "helm_release" "argocd" {
   chart            = "argo-cd"
   namespace        = "argocd"
   create_namespace = true
+
+  depends_on = [
+    module.eks
+  ]
 }
 
 # Monitoring Stack - Prometheus
@@ -168,7 +216,7 @@ EOF
 
 # TLS Certificates for Linkerd
 resource "tls_private_key" "linkerd_root" {
-  algorithm = "ECDSA"
+  algorithm   = "ECDSA"
   ecdsa_curve = "P256"
 }
 

@@ -19,8 +19,23 @@ on:
         options:
           - dev
           - prod
+      aws_region:
+        description: 'AWS region for infrastructure'
+        required: true
+        default: 'ap-south-1'
+        type: string
+      state_bucket:
+        description: 'S3 bucket for Terraform state'
+        required: true
+        default: 'eks-terraform-state-prod'
+        type: string
+      dynamodb_table:
+        description: 'DynamoDB table for Terraform state locking'
+        required: true
+        default: 'terraform-locks'
+        type: string
       delete_state:
-        description: 'When destroying, also delete remote Terraform state (S3 & DynamoDB)'
+        description: 'When destroying, also delete this environment remote Terraform state file'
         required: false
         default: 'false'
         type: choice
@@ -38,6 +53,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TF_VAR_environment: ${{ inputs.environment }}
+      TF_VAR_region: ${{ inputs.aws_region }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      TF_STATE_BUCKET: ${{ inputs.state_bucket }}
+      TF_STATE_KEY: ${{ inputs.environment }}/eks/terraform.tfstate
+      TF_LOCK_TABLE: ${{ inputs.dynamodb_table }}
+      TF_INPUT: false
     permissions:
       id-token: write
       contents: read
@@ -49,7 +70,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORMAWS }}
-          aws-region: ap-south-1
+          aws-region: ${{ env.AWS_REGION }}
           role-session-name: github-actions-eks
 
       - name: Verify AWS identity
@@ -63,37 +84,41 @@ jobs:
       - name: Terraform Init & Validate
         working-directory: terraform
         run: |
-          terraform init -reconfigure
+          terraform init -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
           terraform validate
 
       - name: Terraform Plan & Apply
         if: inputs.action == 'apply'
         working-directory: terraform
         run: |
-          terraform plan -out=tfplan
+          terraform plan -var="environment=${{ inputs.environment }}" -out=tfplan
           terraform apply -auto-approve tfplan
 
-      - name: Configure kubectl
+      - name: Configure kubectl after apply
         if: inputs.action == 'apply'
         working-directory: terraform
         run: |
           CLUSTER_NAME=$(terraform output -raw cluster_name)
-          aws eks update-kubeconfig --region ap-south-1 --name ${CLUSTER_NAME}
+          KARPENTER_NODE_ROLE_NAME=$(terraform output -raw karpenter_node_iam_role_name)
+          aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
+          echo "CLUSTER_NAME=${CLUSTER_NAME}" >> "${GITHUB_ENV}"
+          echo "KARPENTER_NODE_ROLE_NAME=${KARPENTER_NODE_ROLE_NAME}" >> "${GITHUB_ENV}"
 
       - name: Deploy Karpenter NodePool
         if: inputs.action == 'apply'
         run: |
-          kubectl apply -f kubernetes/karpenter/
-
-      - name: Deploy Monitoring
-        if: inputs.action == 'apply'
-        run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-
-          helm upgrade --install kube-prometheus-stack \
-          prometheus-community/kube-prometheus-stack \
-          -n monitoring \
-          --create-namespace
+          kubectl rollout status deployment/karpenter -n kube-system --timeout=10m
+          kubectl wait --for condition=Established crd/nodepools.karpenter.sh --timeout=5m
+          kubectl wait --for condition=Established crd/ec2nodeclasses.karpenter.k8s.aws --timeout=5m
+          rm -rf /tmp/karpenter
+          cp -R kubernetes/karpenter /tmp/karpenter
+          sed -i "s|__KARPENTER_NODE_ROLE__|${KARPENTER_NODE_ROLE_NAME}|g" /tmp/karpenter/ec2nodeclass.yaml
+          sed -i "s|__KARPENTER_DISCOVERY__|${CLUSTER_NAME}|g" /tmp/karpenter/ec2nodeclass.yaml
+          kubectl apply -f /tmp/karpenter/
 
       - name: Deploy Microservices
         if: inputs.action == 'apply'
@@ -113,29 +138,72 @@ jobs:
           echo "Waiting for order-service StatefulSet..."
           kubectl rollout status statefulset/order-service -n order-service --timeout=10m
 
+      - name: Configure kubectl before destroy
+        if: inputs.action == 'destroy'
+        working-directory: terraform
+        run: |
+          set -euo pipefail
+          CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || true)
+          if [ -n "${CLUSTER_NAME}" ]; then
+            aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
+          else
+            echo "No cluster_name found in Terraform state; skipping Kubernetes cleanup."
+          fi
+
+      - name: Cleanup Kubernetes resources created by workflow
+        if: inputs.action == 'destroy'
+        run: |
+          set -euo pipefail
+
+          if ! kubectl cluster-info >/dev/null 2>&1; then
+            echo "Kubernetes cluster is not reachable; skipping Kubernetes manifest cleanup."
+            exit 0
+          fi
+
+          echo "Deleting microservices applied by this workflow"
+          kubectl delete -f kubernetes/microservices/order-service/statefulset.yaml --ignore-not-found=true --wait=true --timeout=10m || true
+          kubectl delete -f kubernetes/microservices/payment-service/statefulset.yaml --ignore-not-found=true --wait=true --timeout=10m || true
+          kubectl delete -f kubernetes/microservices/user-service/statefulset.yaml --ignore-not-found=true --wait=true --timeout=10m || true
+
+          echo "Deleting StatefulSet PVCs created from volume claim templates"
+          kubectl delete pvc -n order-service -l app=order-service --ignore-not-found=true --wait=true --timeout=10m || true
+          kubectl delete pvc -n payment-service -l app=payment-service --ignore-not-found=true --wait=true --timeout=10m || true
+          kubectl delete pvc -n user-service -l app=user-service --ignore-not-found=true --wait=true --timeout=10m || true
+
+          echo "Deleting storage resources applied by this workflow"
+          kubectl delete -f kubernetes/storage/storage-class.yaml --ignore-not-found=true --wait=true --timeout=10m || true
+
+          echo "Deleting Karpenter NodePool and EC2NodeClass applied by this workflow"
+          kubectl delete nodepool default --ignore-not-found=true --wait=true --timeout=10m || true
+          kubectl delete ec2nodeclass default --ignore-not-found=true --wait=true --timeout=10m || true
+
       - name: Terraform Destroy
         if: inputs.action == 'destroy'
         working-directory: terraform
         run: |
-          terraform init -reconfigure
-          terraform destroy -auto-approve
+          terraform init -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
+          terraform destroy -var="environment=${{ inputs.environment }}" -auto-approve
 
-      - name: Cleanup remote Terraform state (S3 & DynamoDB)
+      - name: Cleanup remote Terraform state file
         if: inputs.action == 'destroy' && inputs.delete_state == 'true' && inputs.delete_state_confirm == 'CONFIRM'
         run: |
           set -euo pipefail
-          BUCKET=eks-terraform-state-prod
-          REGION=us-west-2
-          TABLE=terraform-locks
+          BUCKET=${TF_STATE_BUCKET}
+          REGION=${AWS_REGION}
+          PREFIX="${{ inputs.environment }}/eks/"
 
           echo "Installing jq (if missing)"
           sudo apt-get update && sudo apt-get install -y jq || true
 
-          echo "Checking if bucket has versioning enabled"
+          echo "Deleting Terraform state objects under s3://${BUCKET}/${PREFIX}"
           VER_STATUS=$(aws s3api get-bucket-versioning --bucket "$BUCKET" --region "$REGION" --output text --query 'Status' || echo "")
           if [ "$VER_STATUS" = "Enabled" ] || [ "$VER_STATUS" = "Suspended" ]; then
-            echo "Bucket versioning enabled — deleting versions and delete markers"
-            aws s3api list-object-versions --bucket "$BUCKET" --region "$REGION" --output json \
+            echo "Bucket versioning enabled - deleting matching versions and delete markers"
+            aws s3api list-object-versions --bucket "$BUCKET" --prefix "$PREFIX" --region "$REGION" --output json \
               | jq -c '.Versions[]?,.DeleteMarkers[]?' \
               | while read item; do
                   KEY=$(echo "$item" | jq -r '.Key')
@@ -145,11 +213,5 @@ jobs:
                 done
           fi
 
-          echo "Deleting remaining objects"
-          aws s3 rm s3://$BUCKET --recursive --region $REGION || true
-
-          echo "Deleting bucket"
-          aws s3api delete-bucket --bucket $BUCKET --region $REGION || true
-
-          echo "Deleting DynamoDB lock table (if exists)"
-          aws dynamodb delete-table --table-name $TABLE --region $REGION || true
+          echo "Deleting current objects under ${PREFIX}"
+          aws s3 rm "s3://${BUCKET}/${PREFIX}" --recursive --region "$REGION" || true
