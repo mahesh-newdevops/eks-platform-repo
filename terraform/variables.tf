@@ -41,7 +41,7 @@ variable "assign_public_ip_to_nodes" {
 variable "cluster_endpoint_public_access_cidrs" {
   description = "CIDR blocks allowed to reach the public EKS API endpoint. Keep broad for GitHub-hosted runners, restrict to office/VPN CIDRs for production."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
+  default     = ["203.0.113.10/32"]
 }
 
 variable "environment" {

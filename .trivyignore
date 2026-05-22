@@ -1,0 +1,9 @@
+# Learning lab exception: nodes run in public subnets without NAT Gateway or
+# paid VPC endpoints, so subnet public IP assignment is required for node
+# bootstrap, ECR/image pulls, AWS API calls, and Helm downloads.
+AWS-0164
+
+# Learning lab exception: terraform-aws-eks module creates broad node egress.
+# In a no-NAT public-subnet cluster, nodes need outbound internet access to AWS
+# APIs and registries. Tighten this only after adding NAT or VPC endpoints.
+AWS-0104

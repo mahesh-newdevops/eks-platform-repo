@@ -9,7 +9,7 @@ public_subnet_cidrs = [
 ]
 assign_public_ip_to_nodes = true
 cluster_endpoint_public_access_cidrs = [
-  "0.0.0.0/0"
+  "203.0.113.10/32"
 ]
 
 # RDS Configuration

@@ -19,6 +19,12 @@ spec:
 
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: backend
           image: python:3.12.8-slim
@@ -32,6 +38,13 @@ spec:
 
           ports:
             - containerPort: 5000
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
 
           resources:
             requests:
