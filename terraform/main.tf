@@ -1,5 +1,6 @@
 module "eks" {
-  source = "terraform-aws-modules/eks/aws"
+  source  = "terraform-aws-modules/eks/aws"
+  version = "21.20.0"
 
   name               = local.cluster_name
   kubernetes_version = var.kubernetes_version
@@ -35,6 +36,14 @@ module "eks" {
       min_size       = 1
       max_size       = 3
       desired_size   = 2
+
+      network_interfaces = [
+        {
+          associate_public_ip_address = var.assign_public_ip_to_nodes
+          delete_on_termination       = true
+          device_index                = 0
+        }
+      ]
     }
   }
 
@@ -50,9 +59,11 @@ module "eks" {
 }
 
 module "karpenter" {
-  source = "terraform-aws-modules/eks/aws//modules/karpenter"
+  source  = "terraform-aws-modules/eks/aws//modules/karpenter"
+  version = "21.20.0"
 
   cluster_name                  = module.eks.cluster_name
+  enable_inline_policy          = true
   node_iam_role_name            = "KarpenterNodeRole-${local.cluster_name}"
   node_iam_role_use_name_prefix = false
   queue_name                    = "Karpenter-${local.cluster_name}"
