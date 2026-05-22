@@ -104,7 +104,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          CLUSTER_NAME="${{ inputs.environment }}-platform-eks"
+          CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || true)
+          if [ -z "${CLUSTER_NAME}" ]; then
+            CLUSTER_NAME="${{ inputs.environment }}-platform-eks"
+          fi
+
+          echo "Reconciling existing EKS add-ons for cluster: ${CLUSTER_NAME}"
 
           import_addon() {
             local addon_name="$1"
@@ -121,6 +126,13 @@ jobs:
               return
             fi
 
+            aws eks describe-addon \
+              --cluster-name "${CLUSTER_NAME}" \
+              --addon-name "${addon_name}" \
+              --region "${AWS_REGION}" \
+              --query 'addon.{Name:addonName,Version:addonVersion,Status:status,Health:health.issues}' \
+              --output table
+
             terraform import "${resource_address}" "${import_id}"
           }
 
@@ -129,6 +141,9 @@ jobs:
           import_addon "coredns"
           import_addon "eks-pod-identity-agent"
           import_addon "aws-ebs-csi-driver"
+
+          echo "EKS add-ons currently in Terraform state:"
+          terraform state list | grep 'aws_eks_addon' || true
 
       - name: Terraform Plan & Apply
         if: inputs.action == 'apply'

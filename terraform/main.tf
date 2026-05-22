@@ -25,7 +25,8 @@ module "eks" {
     eks-pod-identity-agent = {}
 
     aws-ebs-csi-driver = {
-      most_recent = true
+      most_recent              = true
+      service_account_role_arn = aws_iam_role.ebs_csi_driver.arn
     }
   }
 
@@ -56,6 +57,45 @@ module "eks" {
     Terraform                = "true"
     "karpenter.sh/discovery" = local.cluster_name
   }
+}
+
+data "aws_iam_policy_document" "ebs_csi_driver_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.oidc_provider, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.oidc_provider, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi_driver" {
+  name               = "${local.cluster_name}-ebs-csi-driver"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_driver_assume_role.json
+
+  tags = {
+    Environment = local.environment
+    Terraform   = "true"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver" {
+  role       = aws_iam_role.ebs_csi_driver.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
 module "karpenter" {
