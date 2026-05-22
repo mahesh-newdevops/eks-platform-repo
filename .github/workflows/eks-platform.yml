@@ -12,6 +12,7 @@ on:
           - apply
           - destroy
           - force-unlock
+          - delete-stuck-ebs-csi
       environment:
         description: 'Environment to deploy (dev|prod)'
         required: true
@@ -95,7 +96,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init & Validate
-        if: inputs.action != 'force-unlock'
+        if: inputs.action != 'force-unlock' && inputs.action != 'delete-stuck-ebs-csi'
         working-directory: terraform
         run: |
           terraform init -reconfigure \
@@ -123,6 +124,37 @@ jobs:
             -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
 
           terraform force-unlock -force "${{ inputs.terraform_lock_id }}"
+
+      - name: Delete stuck EBS CSI addon
+        if: inputs.action == 'delete-stuck-ebs-csi'
+        run: |
+          set -euo pipefail
+
+          CLUSTER_NAME="${{ inputs.environment }}-platform-eks"
+
+          if ! aws eks describe-addon --cluster-name "${CLUSTER_NAME}" --addon-name aws-ebs-csi-driver --region "${AWS_REGION}" >/dev/null 2>&1; then
+            echo "aws-ebs-csi-driver does not exist on ${CLUSTER_NAME}; nothing to delete."
+            exit 0
+          fi
+
+          aws eks describe-addon \
+            --cluster-name "${CLUSTER_NAME}" \
+            --addon-name aws-ebs-csi-driver \
+            --region "${AWS_REGION}" \
+            --query 'addon.{Name:addonName,Version:addonVersion,Status:status,Health:health.issues}' \
+            --output table
+
+          aws eks delete-addon \
+            --cluster-name "${CLUSTER_NAME}" \
+            --addon-name aws-ebs-csi-driver \
+            --region "${AWS_REGION}"
+
+          aws eks wait addon-deleted \
+            --cluster-name "${CLUSTER_NAME}" \
+            --addon-name aws-ebs-csi-driver \
+            --region "${AWS_REGION}"
+
+          echo "aws-ebs-csi-driver deleted from ${CLUSTER_NAME}. Run action=apply next."
 
       - name: Import existing EKS addons
         if: inputs.action == 'apply'
