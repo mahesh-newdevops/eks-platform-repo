@@ -299,6 +299,7 @@ resource "helm_release" "argocd" {
   chart            = "argo-cd"
   namespace        = "argocd"
   create_namespace = true
+  timeout          = 900
 
   depends_on = [
     module.eks,
@@ -314,6 +315,8 @@ resource "helm_release" "prometheus" {
   namespace        = "monitoring"
   create_namespace = true
   version          = "57.0.0"
+  timeout          = 900
+  wait             = false
 
   values = [
     file("${path.module}/../kubernetes/monitoring/prometheus-values.yaml")
@@ -333,6 +336,8 @@ resource "helm_release" "loki" {
   namespace        = "monitoring"
   create_namespace = true
   version          = "2.10.1"
+  timeout          = 900
+  wait             = false
 
   values = [
     file("${path.module}/../kubernetes/monitoring/loki-values.yaml")
@@ -345,13 +350,29 @@ resource "helm_release" "loki" {
 }
 
 # Service Mesh - Linkerd for traffic management and observability
+resource "helm_release" "linkerd_crds" {
+  name             = "linkerd-crds"
+  repository       = "https://helm.linkerd.io/stable"
+  chart            = "linkerd-crds"
+  namespace        = "linkerd"
+  create_namespace = true
+  version          = "1.8.0"
+  timeout          = 900
+
+  depends_on = [
+    module.eks,
+    helm_release.alb_controller
+  ]
+}
+
 resource "helm_release" "linkerd" {
   name             = "linkerd"
   repository       = "https://helm.linkerd.io/stable"
-  chart            = "linkerd2"
+  chart            = "linkerd-control-plane"
   namespace        = "linkerd"
   create_namespace = true
-  version          = "1.16.0"
+  version          = "1.16.11"
+  timeout          = 900
 
   values = [
     <<EOF
@@ -369,7 +390,8 @@ EOF
 
   depends_on = [
     module.eks,
-    helm_release.alb_controller
+    helm_release.alb_controller,
+    helm_release.linkerd_crds
   ]
 }
 
@@ -381,6 +403,8 @@ resource "helm_release" "jaeger" {
   namespace        = "monitoring"
   create_namespace = true
   version          = "0.71.0"
+  timeout          = 900
+  wait             = false
 
   values = [
     <<EOF
