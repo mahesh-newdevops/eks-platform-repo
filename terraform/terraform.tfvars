@@ -9,12 +9,13 @@ public_subnet_cidrs = [
 ]
 assign_public_ip_to_nodes = true
 cluster_endpoint_public_access_cidrs = [
-  "203.0.113.10/32"
+  "0.0.0.0/0"
 ]
 
 # RDS Configuration
 environment           = "dev"
 rds_instance_class    = "db.t3.micro"
+rds_engine_version    = null
 rds_allocated_storage = 20
 rds_db_name           = "microservices"
 rds_username          = "postgres"

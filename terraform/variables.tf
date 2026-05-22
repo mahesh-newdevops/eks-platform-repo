@@ -41,7 +41,7 @@ variable "assign_public_ip_to_nodes" {
 variable "cluster_endpoint_public_access_cidrs" {
   description = "CIDR blocks allowed to reach the public EKS API endpoint. Keep broad for GitHub-hosted runners, restrict to office/VPN CIDRs for production."
   type        = list(string)
-  default     = ["203.0.113.10/32"]
+  default     = ["0.0.0.0/0"]
 }
 
 variable "environment" {
@@ -59,6 +59,12 @@ variable "rds_instance_class" {
   description = "RDS instance type"
   type        = string
   default     = "db.t3.micro"
+}
+
+variable "rds_engine_version" {
+  description = "Optional RDS PostgreSQL engine version. Leave null to let AWS choose a currently supported default for the region."
+  type        = string
+  default     = null
 }
 
 variable "rds_allocated_storage" {

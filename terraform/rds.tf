@@ -37,7 +37,7 @@ resource "aws_db_subnet_group" "rds" {
 resource "aws_db_instance" "postgres" {
   identifier        = local.rds_name
   engine            = "postgres"
-  engine_version    = "15.3"
+  engine_version    = var.rds_engine_version
   instance_class    = var.rds_instance_class
   allocated_storage = var.rds_allocated_storage
   storage_type      = "gp3"
