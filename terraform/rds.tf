@@ -1,5 +1,11 @@
 # RDS PostgreSQL Database for Microservices
 
+data "aws_rds_engine_version" "postgres" {
+  engine       = "postgres"
+  version      = var.rds_engine_version
+  default_only = var.rds_engine_version == null
+}
+
 # Security Group for RDS
 resource "aws_security_group" "rds" {
   name        = "${local.resource_prefix}-rds-postgres-sg"
@@ -37,7 +43,7 @@ resource "aws_db_subnet_group" "rds" {
 resource "aws_db_instance" "postgres" {
   identifier        = local.rds_name
   engine            = "postgres"
-  engine_version    = var.rds_engine_version
+  engine_version    = data.aws_rds_engine_version.postgres.version
   instance_class    = var.rds_instance_class
   allocated_storage = var.rds_allocated_storage
   storage_type      = "gp3"
@@ -73,7 +79,7 @@ resource "aws_db_instance" "postgres" {
 # DB Parameter Group for PostgreSQL
 resource "aws_db_parameter_group" "postgres" {
   name   = "${local.resource_prefix}-postgres-params"
-  family = "postgres15"
+  family = data.aws_rds_engine_version.postgres.parameter_group_family
 
   parameter {
     name  = "log_connections"

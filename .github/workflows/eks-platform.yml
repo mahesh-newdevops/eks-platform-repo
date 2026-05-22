@@ -98,6 +98,38 @@ jobs:
             -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
           terraform validate
 
+      - name: Import existing EKS addons
+        if: inputs.action == 'apply'
+        working-directory: terraform
+        run: |
+          set -euo pipefail
+
+          CLUSTER_NAME="${{ inputs.environment }}-platform-eks"
+
+          import_addon() {
+            local addon_name="$1"
+            local resource_address="module.eks.aws_eks_addon.this[\"${addon_name}\"]"
+            local import_id="${CLUSTER_NAME}:${addon_name}"
+
+            if terraform state show "${resource_address}" >/dev/null 2>&1; then
+              echo "${addon_name} is already managed by Terraform state; skipping import."
+              return
+            fi
+
+            if ! aws eks describe-addon --cluster-name "${CLUSTER_NAME}" --addon-name "${addon_name}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+              echo "${addon_name} does not exist on ${CLUSTER_NAME}; skipping import."
+              return
+            fi
+
+            terraform import "${resource_address}" "${import_id}"
+          }
+
+          import_addon "kube-proxy"
+          import_addon "vpc-cni"
+          import_addon "coredns"
+          import_addon "eks-pod-identity-agent"
+          import_addon "aws-ebs-csi-driver"
+
       - name: Terraform Plan & Apply
         if: inputs.action == 'apply'
         working-directory: terraform
