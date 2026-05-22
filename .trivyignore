@@ -7,3 +7,9 @@ AWS-0164
 # In a no-NAT public-subnet cluster, nodes need outbound internet access to AWS
 # APIs and registries. Tighten this only after adding NAT or VPC endpoints.
 AWS-0104
+
+# Learning lab exception: GitHub-hosted runners need public EKS API access to
+# run kubectl/Helm after Terraform creates the cluster. For production, use a
+# private endpoint with VPN/Direct Connect or a self-hosted runner inside the VPC.
+AWS-0040
+AWS-0041
