@@ -203,6 +203,39 @@ jobs:
           echo "EKS add-ons currently in Terraform state:"
           terraform state list | grep 'aws_eks_addon' || true
 
+      - name: Remove stale ALB controller webhooks
+        if: inputs.action == 'apply'
+        working-directory: terraform
+        run: |
+          set -euo pipefail
+
+          CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || true)
+          if [ -z "${CLUSTER_NAME}" ]; then
+            CLUSTER_NAME="${{ inputs.environment }}-platform-eks"
+          fi
+
+          if ! aws eks describe-cluster --region "${AWS_REGION}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
+            echo "${CLUSTER_NAME} does not exist yet; skipping webhook cleanup."
+            exit 0
+          fi
+
+          aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
+
+          if ! kubectl get service aws-load-balancer-webhook-service -n kube-system >/dev/null 2>&1; then
+            echo "AWS Load Balancer Controller webhook service does not exist; skipping cleanup."
+            exit 0
+          fi
+
+          READY_ENDPOINTS=$(kubectl get endpoints aws-load-balancer-webhook-service -n kube-system -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
+          if [ -n "${READY_ENDPOINTS}" ]; then
+            echo "AWS Load Balancer Controller webhook has endpoints: ${READY_ENDPOINTS}"
+            exit 0
+          fi
+
+          echo "AWS Load Balancer Controller webhook service has no endpoints; deleting stale webhook configurations."
+          kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found=true
+          kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found=true
+
       - name: Terraform Plan & Apply
         if: inputs.action == 'apply'
         working-directory: terraform

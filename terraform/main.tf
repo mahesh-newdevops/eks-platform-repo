@@ -98,6 +98,131 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_driver" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
+data "aws_iam_policy_document" "alb_controller_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.oidc_provider, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.oidc_provider, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "aws_iam_role" "alb_controller" {
+  name               = "${local.cluster_name}-alb-controller"
+  assume_role_policy = data.aws_iam_policy_document.alb_controller_assume_role.json
+
+  tags = {
+    Environment = local.environment
+    Terraform   = "true"
+  }
+}
+
+data "aws_iam_policy_document" "alb_controller" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "iam:CreateServiceLinkedRole",
+      "ec2:DescribeAccountAttributes",
+      "ec2:DescribeAddresses",
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeCoipPools",
+      "ec2:DescribeInstances",
+      "ec2:DescribeInternetGateways",
+      "ec2:DescribeNetworkInterfaces",
+      "ec2:DescribeSecurityGroups",
+      "ec2:DescribeSubnets",
+      "ec2:DescribeTags",
+      "ec2:DescribeVpcPeeringConnections",
+      "ec2:DescribeVpcs",
+      "ec2:GetCoipPoolUsage",
+      "ec2:GetSecurityGroupsForVpc",
+      "elasticloadbalancing:Describe*",
+      "acm:DescribeCertificate",
+      "acm:ListCertificates",
+      "cognito-idp:DescribeUserPoolClient",
+      "iam:GetServerCertificate",
+      "iam:ListServerCertificates",
+      "waf-regional:GetWebACL",
+      "waf-regional:GetWebACLForResource",
+      "waf-regional:AssociateWebACL",
+      "waf-regional:DisassociateWebACL",
+      "wafv2:GetWebACL",
+      "wafv2:GetWebACLForResource",
+      "wafv2:AssociateWebACL",
+      "wafv2:DisassociateWebACL",
+      "shield:GetSubscriptionState",
+      "shield:DescribeProtection",
+      "shield:CreateProtection",
+      "shield:DeleteProtection"
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:CreateSecurityGroup",
+      "ec2:CreateTags",
+      "ec2:DeleteTags",
+      "ec2:DeleteSecurityGroup",
+      "ec2:RevokeSecurityGroupIngress",
+      "elasticloadbalancing:AddTags",
+      "elasticloadbalancing:CreateListener",
+      "elasticloadbalancing:CreateLoadBalancer",
+      "elasticloadbalancing:CreateRule",
+      "elasticloadbalancing:CreateTargetGroup",
+      "elasticloadbalancing:DeleteListener",
+      "elasticloadbalancing:DeleteLoadBalancer",
+      "elasticloadbalancing:DeleteRule",
+      "elasticloadbalancing:DeleteTargetGroup",
+      "elasticloadbalancing:ModifyListener",
+      "elasticloadbalancing:ModifyLoadBalancerAttributes",
+      "elasticloadbalancing:ModifyRule",
+      "elasticloadbalancing:ModifyTargetGroup",
+      "elasticloadbalancing:ModifyTargetGroupAttributes",
+      "elasticloadbalancing:RegisterTargets",
+      "elasticloadbalancing:RemoveTags",
+      "elasticloadbalancing:SetIpAddressType",
+      "elasticloadbalancing:SetSecurityGroups",
+      "elasticloadbalancing:SetSubnets",
+      "elasticloadbalancing:SetWebAcl",
+      "elasticloadbalancing:DeregisterTargets"
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "alb_controller" {
+  name   = "${local.cluster_name}-alb-controller"
+  policy = data.aws_iam_policy_document.alb_controller.json
+
+  tags = {
+    Environment = local.environment
+    Terraform   = "true"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "alb_controller" {
+  role       = aws_iam_role.alb_controller.name
+  policy_arn = aws_iam_policy.alb_controller.arn
+}
+
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
   version = "21.20.0"
@@ -147,15 +272,24 @@ resource "helm_release" "alb_controller" {
   repository = "https://aws.github.io/eks-charts"
   chart      = "aws-load-balancer-controller"
   namespace  = "kube-system"
+  timeout    = 900
 
   values = [
     <<EOF
 clusterName: ${module.eks.cluster_name}
+region: ${var.region}
+vpcId: ${aws_vpc.this.id}
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+  annotations:
+    eks.amazonaws.com/role-arn: ${aws_iam_role.alb_controller.arn}
 EOF
   ]
 
   depends_on = [
-    module.eks
+    module.eks,
+    aws_iam_role_policy_attachment.alb_controller
   ]
 }
 
@@ -167,7 +301,8 @@ resource "helm_release" "argocd" {
   create_namespace = true
 
   depends_on = [
-    module.eks
+    module.eks,
+    helm_release.alb_controller
   ]
 }
 
@@ -185,7 +320,8 @@ resource "helm_release" "prometheus" {
   ]
 
   depends_on = [
-    module.eks
+    module.eks,
+    helm_release.alb_controller
   ]
 }
 
@@ -211,7 +347,7 @@ resource "helm_release" "loki" {
 # Service Mesh - Linkerd for traffic management and observability
 resource "helm_release" "linkerd" {
   name             = "linkerd"
-  repository       = "https://helm.linkerd.io"
+  repository       = "https://helm.linkerd.io/stable"
   chart            = "linkerd2"
   namespace        = "linkerd"
   create_namespace = true
@@ -232,7 +368,8 @@ EOF
   ]
 
   depends_on = [
-    module.eks
+    module.eks,
+    helm_release.alb_controller
   ]
 }
 
