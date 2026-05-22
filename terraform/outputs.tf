@@ -1,4 +1,14 @@
 # EKS Cluster
+output "vpc_id" {
+  description = "Dedicated VPC ID"
+  value       = aws_vpc.this.id
+}
+
+output "public_subnet_ids" {
+  description = "Public subnet IDs used by EKS and ALB"
+  value       = aws_subnet.public[*].id
+}
+
 output "cluster_name" {
   description = "EKS cluster name"
   value       = module.eks.cluster_name

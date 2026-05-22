@@ -3,10 +3,11 @@ module "eks" {
 
   name               = local.cluster_name
   kubernetes_version = var.kubernetes_version
-  vpc_id             = data.aws_vpc.default.id
-  subnet_ids         = data.aws_subnets.default.ids
+  vpc_id             = aws_vpc.this.id
+  subnet_ids         = aws_subnet.public[*].id
 
   endpoint_public_access                   = true
+  endpoint_public_access_cidrs             = var.cluster_endpoint_public_access_cidrs
   enable_cluster_creator_admin_permissions = true
 
   addons = {
@@ -29,6 +30,7 @@ module "eks" {
 
   eks_managed_node_groups = {
     default = {
+      subnet_ids     = aws_subnet.public[*].id
       instance_types = ["t3.medium"]
       min_size       = 1
       max_size       = 3

@@ -18,9 +18,10 @@ spec:
         app: backend
 
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: backend
-          image: python:3.12-slim
+          image: python:3.12.8-slim
 
           command: ["python"]
 

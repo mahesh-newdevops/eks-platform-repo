@@ -27,6 +27,7 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: order-service
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -186,6 +187,7 @@ kind: ServiceAccount
 metadata:
   name: order-service
   namespace: order-service
+automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: ConfigMap

@@ -1,37 +1,19 @@
 # RDS PostgreSQL Database for Microservices
 
-# VPC for RDS (using default VPC for simplicity)
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
 # Security Group for RDS
 resource "aws_security_group" "rds" {
   name        = "${local.resource_prefix}-rds-postgres-sg"
   description = "Security group for RDS PostgreSQL"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = aws_vpc.this.id
 
   ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port = 5432
+    to_port   = 5432
+    protocol  = "tcp"
+    security_groups = [
+      module.eks.node_security_group_id
+    ]
     description = "PostgreSQL access"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "All outbound traffic"
   }
 
   tags = {
@@ -43,7 +25,7 @@ resource "aws_security_group" "rds" {
 # DB Subnet Group
 resource "aws_db_subnet_group" "rds" {
   name       = "${local.resource_prefix}-rds-subnet-group"
-  subnet_ids = data.aws_subnets.default.ids
+  subnet_ids = aws_subnet.public[*].id
 
   tags = {
     Name        = "${local.resource_prefix}-rds-subnet-group"
@@ -193,7 +175,9 @@ resource "kubernetes_namespace" "user_service" {
   metadata {
     name = "user-service"
     labels = {
-      "linkerd.io/inject" = "enabled"
+      "linkerd.io/inject"                = "enabled"
+      "pod-security.kubernetes.io/audit" = "restricted"
+      "pod-security.kubernetes.io/warn"  = "restricted"
     }
   }
 
@@ -204,7 +188,9 @@ resource "kubernetes_namespace" "payment_service" {
   metadata {
     name = "payment-service"
     labels = {
-      "linkerd.io/inject" = "enabled"
+      "linkerd.io/inject"                = "enabled"
+      "pod-security.kubernetes.io/audit" = "restricted"
+      "pod-security.kubernetes.io/warn"  = "restricted"
     }
   }
 
@@ -215,7 +201,9 @@ resource "kubernetes_namespace" "order_service" {
   metadata {
     name = "order-service"
     labels = {
-      "linkerd.io/inject" = "enabled"
+      "linkerd.io/inject"                = "enabled"
+      "pod-security.kubernetes.io/audit" = "restricted"
+      "pod-security.kubernetes.io/warn"  = "restricted"
     }
   }
 

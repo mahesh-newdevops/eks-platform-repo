@@ -27,6 +27,7 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: payment-service
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -190,6 +191,7 @@ kind: ServiceAccount
 metadata:
   name: payment-service
   namespace: payment-service
+automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: ConfigMap

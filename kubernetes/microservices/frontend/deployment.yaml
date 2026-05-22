@@ -18,9 +18,10 @@ spec:
         app: frontend
 
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: frontend
-          image: nginx:latest
+          image: nginx:1.27.4-alpine
 
           ports:
             - containerPort: 80

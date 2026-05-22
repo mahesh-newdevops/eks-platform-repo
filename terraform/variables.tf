@@ -21,7 +21,27 @@ variable "kubernetes_version" {
 }
 
 variable "vpc_cidr" {
-  default = "10.0.0.0/16"
+  description = "CIDR block for the dedicated VPC."
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "public_subnet_cidrs" {
+  description = "CIDR blocks for public subnets. Use at least two for multi-AZ EKS."
+  type        = list(string)
+  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+}
+
+variable "assign_public_ip_to_nodes" {
+  description = "Assign public IPs to nodes launched in public subnets. Without NAT or VPC endpoints, this must stay true for nodes to reach AWS APIs and pull images."
+  type        = bool
+  default     = true
+}
+
+variable "cluster_endpoint_public_access_cidrs" {
+  description = "CIDR blocks allowed to reach the public EKS API endpoint. Keep broad for GitHub-hosted runners, restrict to office/VPN CIDRs for production."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "environment" {

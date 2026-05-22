@@ -1,0 +1,74 @@
+name: Trivy Security Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: 'Comma-separated severities to fail on'
+        required: true
+        default: 'CRITICAL,HIGH'
+        type: string
+      fail_on_findings:
+        description: 'Fail workflow when matching findings are detected'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      TRIVY_SEVERITY: ${{ github.event_name == 'workflow_dispatch' && inputs.severity || 'CRITICAL,HIGH' }}
+      TRIVY_EXIT_CODE: ${{ github.event_name == 'workflow_dispatch' && inputs.fail_on_findings == 'false' && '0' || '1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t full-platform-backend:scan backend
+
+      - name: Build frontend image
+        run: docker build -t full-platform-frontend:scan frontend
+
+      - name: Scan repository filesystem
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: ${{ env.TRIVY_EXIT_CODE }}
+          ignore-unfixed: true
+          format: table
+
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: full-platform-backend:scan
+          scanners: vuln,secret
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: ${{ env.TRIVY_EXIT_CODE }}
+          ignore-unfixed: true
+          format: table
+
+      - name: Scan frontend image
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          image-ref: full-platform-frontend:scan
+          scanners: vuln,secret
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: ${{ env.TRIVY_EXIT_CODE }}
+          ignore-unfixed: true
+          format: table

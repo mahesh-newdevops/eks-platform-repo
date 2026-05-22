@@ -5,6 +5,8 @@ metadata:
   labels:
     name: user-service
     linkerd.io/inject: enabled
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -35,6 +37,7 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: user-service
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -140,6 +143,7 @@ kind: ServiceAccount
 metadata:
   name: user-service
   namespace: user-service
+automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: ConfigMap
