@@ -11,6 +11,7 @@ on:
         options:
           - apply
           - destroy
+          - force-unlock
       environment:
         description: 'Environment to deploy (dev|prod)'
         required: true
@@ -44,6 +45,11 @@ on:
           - 'false'
       delete_state_confirm:
         description: "Type 'CONFIRM' to allow remote state deletion when delete_state=true"
+        required: false
+        default: ''
+        type: string
+      terraform_lock_id:
+        description: 'Terraform lock ID to release when action=force-unlock'
         required: false
         default: ''
         type: string
@@ -89,6 +95,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init & Validate
+        if: inputs.action != 'force-unlock'
         working-directory: terraform
         run: |
           terraform init -reconfigure \
@@ -97,6 +104,25 @@ jobs:
             -backend-config="region=${AWS_REGION}" \
             -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
           terraform validate
+
+      - name: Terraform Force Unlock
+        if: inputs.action == 'force-unlock'
+        working-directory: terraform
+        run: |
+          set -euo pipefail
+
+          if [ -z "${{ inputs.terraform_lock_id }}" ]; then
+            echo "terraform_lock_id is required when action=force-unlock"
+            exit 1
+          fi
+
+          terraform init -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${TF_STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
+
+          terraform force-unlock -force "${{ inputs.terraform_lock_id }}"
 
       - name: Import existing EKS addons
         if: inputs.action == 'apply'
