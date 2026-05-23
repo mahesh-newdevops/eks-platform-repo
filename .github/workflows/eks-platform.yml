@@ -1,4 +1,4 @@
-name: EKS Platform Deployment
+name: EKS Cluster And AWS Addons
 
 on:
   workflow_dispatch:
@@ -11,8 +11,6 @@ on:
         options:
           - apply
           - destroy
-          - force-unlock
-          - delete-stuck-ebs-csi
       environment:
         description: 'Environment to deploy (dev|prod)'
         required: true
@@ -36,27 +34,32 @@ on:
         required: true
         default: 'terraform-locks'
         type: string
-      delete_state:
-        description: 'When destroying, also delete this environment remote Terraform state file'
-        required: false
-        default: 'false'
+      bootstrap_argocd:
+        description: 'Create/update the ArgoCD root application after cluster apply'
+        required: true
+        default: 'true'
         type: choice
         options:
           - 'true'
           - 'false'
-      delete_state_confirm:
-        description: "Type 'CONFIRM' to allow remote state deletion when delete_state=true"
+      gitops_repo_url:
+        description: 'GitOps repo URL that ArgoCD root application should track'
         required: false
         default: ''
         type: string
-      terraform_lock_id:
-        description: 'Terraform lock ID to release when action=force-unlock'
+      gitops_target_revision:
+        description: 'Git revision for the GitOps root application'
         required: false
-        default: ''
+        default: 'main'
+        type: string
+      gitops_root_path:
+        description: 'Path inside the GitOps repo for the root app-of-apps'
+        required: false
+        default: 'kubernetes/argocd/apps'
         type: string
 
 jobs:
-  deploy:
+  cluster:
     runs-on: ubuntu-latest
     env:
       TF_VAR_environment: ${{ inputs.environment }}
@@ -66,6 +69,10 @@ jobs:
       TF_STATE_KEY: ${{ inputs.environment }}/eks/terraform.tfstate
       TF_LOCK_TABLE: ${{ inputs.dynamodb_table }}
       TF_INPUT: false
+      TF_VAR_argocd_root_app_enabled: ${{ inputs.bootstrap_argocd }}
+      TF_VAR_argocd_root_app_name: root-app
+      TF_VAR_argocd_root_app_target_revision: ${{ inputs.gitops_target_revision }}
+      TF_VAR_argocd_root_app_path: ${{ inputs.gitops_root_path }}
     permissions:
       id-token: write
       contents: read
@@ -73,16 +80,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORMAWS }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: github-actions-eks
+          role-session-name: github-actions-eks-cluster
 
-      - name: Verify AWS identity
+      - name: Resolve backend bucket
         run: |
-          echo "Verifying assumed role..."
+          set -euo pipefail
           aws sts get-caller-identity
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           if [ "${TF_STATE_BUCKET}" = "eks-terraform-state-prod" ]; then
@@ -90,13 +97,23 @@ jobs:
           fi
           echo "TF_STATE_BUCKET=${TF_STATE_BUCKET}" >> "${GITHUB_ENV}"
           echo "Using backend bucket: ${TF_STATE_BUCKET}"
+          echo "Using state key: ${TF_STATE_KEY}"
           echo "Using lock table: ${TF_LOCK_TABLE}"
+
+      - name: Resolve ArgoCD root application source
+        run: |
+          set -euo pipefail
+          GITOPS_REPO_URL="${{ inputs.gitops_repo_url }}"
+          if [ -z "${GITOPS_REPO_URL}" ]; then
+            GITOPS_REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          fi
+          echo "TF_VAR_argocd_root_app_repo_url=${GITOPS_REPO_URL}" >> "${GITHUB_ENV}"
+          echo "Using ArgoCD root app source: ${GITOPS_REPO_URL}:${{ inputs.gitops_target_revision }}/${{ inputs.gitops_root_path }}"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Terraform Init & Validate
-        if: inputs.action != 'force-unlock' && inputs.action != 'delete-stuck-ebs-csi'
+      - name: Terraform init and validate
         working-directory: terraform
         run: |
           terraform init -reconfigure \
@@ -106,257 +123,46 @@ jobs:
             -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
           terraform validate
 
-      - name: Terraform Force Unlock
-        if: inputs.action == 'force-unlock'
-        working-directory: terraform
-        run: |
-          set -euo pipefail
-
-          if [ -z "${{ inputs.terraform_lock_id }}" ]; then
-            echo "terraform_lock_id is required when action=force-unlock"
-            exit 1
-          fi
-
-          terraform init -reconfigure \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
-            -backend-config="key=${TF_STATE_KEY}" \
-            -backend-config="region=${AWS_REGION}" \
-            -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
-
-          terraform force-unlock -force "${{ inputs.terraform_lock_id }}"
-
-      - name: Delete stuck EBS CSI addon
-        if: inputs.action == 'delete-stuck-ebs-csi'
-        run: |
-          set -euo pipefail
-
-          CLUSTER_NAME="${{ inputs.environment }}-platform-eks"
-
-          if ! aws eks describe-addon --cluster-name "${CLUSTER_NAME}" --addon-name aws-ebs-csi-driver --region "${AWS_REGION}" >/dev/null 2>&1; then
-            echo "aws-ebs-csi-driver does not exist on ${CLUSTER_NAME}; nothing to delete."
-            exit 0
-          fi
-
-          aws eks describe-addon \
-            --cluster-name "${CLUSTER_NAME}" \
-            --addon-name aws-ebs-csi-driver \
-            --region "${AWS_REGION}" \
-            --query 'addon.{Name:addonName,Version:addonVersion,Status:status,Health:health.issues}' \
-            --output table
-
-          aws eks delete-addon \
-            --cluster-name "${CLUSTER_NAME}" \
-            --addon-name aws-ebs-csi-driver \
-            --region "${AWS_REGION}"
-
-          aws eks wait addon-deleted \
-            --cluster-name "${CLUSTER_NAME}" \
-            --addon-name aws-ebs-csi-driver \
-            --region "${AWS_REGION}"
-
-          echo "aws-ebs-csi-driver deleted from ${CLUSTER_NAME}. Run action=apply next."
-
-      - name: Import existing EKS addons
-        if: inputs.action == 'apply'
-        working-directory: terraform
-        run: |
-          set -euo pipefail
-
-          CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || true)
-          if [ -z "${CLUSTER_NAME}" ]; then
-            CLUSTER_NAME="${{ inputs.environment }}-platform-eks"
-          fi
-
-          echo "Reconciling existing EKS add-ons for cluster: ${CLUSTER_NAME}"
-
-          import_addon() {
-            local addon_name="$1"
-            local resource_address="module.eks.aws_eks_addon.this[\"${addon_name}\"]"
-            local import_id="${CLUSTER_NAME}:${addon_name}"
-
-            if terraform state show "${resource_address}" >/dev/null 2>&1; then
-              echo "${addon_name} is already managed by Terraform state; skipping import."
-              return
-            fi
-
-            if ! aws eks describe-addon --cluster-name "${CLUSTER_NAME}" --addon-name "${addon_name}" --region "${AWS_REGION}" >/dev/null 2>&1; then
-              echo "${addon_name} does not exist on ${CLUSTER_NAME}; skipping import."
-              return
-            fi
-
-            aws eks describe-addon \
-              --cluster-name "${CLUSTER_NAME}" \
-              --addon-name "${addon_name}" \
-              --region "${AWS_REGION}" \
-              --query 'addon.{Name:addonName,Version:addonVersion,Status:status,Health:health.issues}' \
-              --output table
-
-            terraform import "${resource_address}" "${import_id}"
-          }
-
-          import_addon "kube-proxy"
-          import_addon "vpc-cni"
-          import_addon "coredns"
-          import_addon "eks-pod-identity-agent"
-          import_addon "aws-ebs-csi-driver"
-
-          echo "EKS add-ons currently in Terraform state:"
-          terraform state list | grep 'aws_eks_addon' || true
-
-      - name: Remove stale ALB controller webhooks
-        if: inputs.action == 'apply'
-        working-directory: terraform
-        run: |
-          set -euo pipefail
-
-          CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || true)
-          if [ -z "${CLUSTER_NAME}" ]; then
-            CLUSTER_NAME="${{ inputs.environment }}-platform-eks"
-          fi
-
-          if ! aws eks describe-cluster --region "${AWS_REGION}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
-            echo "${CLUSTER_NAME} does not exist yet; skipping webhook cleanup."
-            exit 0
-          fi
-
-          aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
-
-          if ! kubectl get service aws-load-balancer-webhook-service -n kube-system >/dev/null 2>&1; then
-            echo "AWS Load Balancer Controller webhook service does not exist; skipping cleanup."
-            exit 0
-          fi
-
-          READY_ENDPOINTS=$(kubectl get endpoints aws-load-balancer-webhook-service -n kube-system -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
-          if [ -n "${READY_ENDPOINTS}" ]; then
-            echo "AWS Load Balancer Controller webhook has endpoints: ${READY_ENDPOINTS}"
-            exit 0
-          fi
-
-          echo "AWS Load Balancer Controller webhook service has no endpoints; deleting stale webhook configurations."
-          kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found=true
-          kubectl delete validatingwebhookconfiguration aws-load-balancer-webhook --ignore-not-found=true
-
-      - name: Terraform Plan & Apply
+      - name: Terraform apply cluster and AWS add-ons
         if: inputs.action == 'apply'
         working-directory: terraform
         run: |
           terraform plan -var="environment=${{ inputs.environment }}" -out=tfplan
           terraform apply -auto-approve tfplan
 
-      - name: Configure kubectl after apply
+      - name: Check cluster nodes and AWS add-ons
         if: inputs.action == 'apply'
         working-directory: terraform
         run: |
+          set -euo pipefail
+
           CLUSTER_NAME=$(terraform output -raw cluster_name)
-          KARPENTER_NODE_ROLE_NAME=$(terraform output -raw karpenter_node_iam_role_name)
           aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
-          echo "CLUSTER_NAME=${CLUSTER_NAME}" >> "${GITHUB_ENV}"
-          echo "KARPENTER_NODE_ROLE_NAME=${KARPENTER_NODE_ROLE_NAME}" >> "${GITHUB_ENV}"
 
-      - name: Deploy Karpenter NodePool
-        if: inputs.action == 'apply'
-        run: |
-          kubectl rollout status deployment/karpenter -n kube-system --timeout=10m
-          kubectl wait --for condition=Established crd/nodepools.karpenter.sh --timeout=5m
-          kubectl wait --for condition=Established crd/ec2nodeclasses.karpenter.k8s.aws --timeout=5m
-          rm -rf /tmp/karpenter
-          cp -R kubernetes/karpenter /tmp/karpenter
-          sed -i "s|__KARPENTER_NODE_ROLE__|${KARPENTER_NODE_ROLE_NAME}|g" /tmp/karpenter/ec2nodeclass.yaml
-          sed -i "s|__KARPENTER_DISCOVERY__|${CLUSTER_NAME}|g" /tmp/karpenter/ec2nodeclass.yaml
-          kubectl apply -f /tmp/karpenter/
+          echo "Waiting for nodes to join and become Ready..."
+          kubectl wait --for=condition=Ready nodes --all --timeout=15m
+          kubectl get nodes -o wide
 
-      - name: Deploy Microservices
-        if: inputs.action == 'apply'
-        run: |
-          kubectl apply -f kubernetes/storage/storage-class.yaml || true
-          kubectl apply -f kubernetes/microservices/user-service/statefulset.yaml
-          kubectl apply -f kubernetes/microservices/payment-service/statefulset.yaml
-          kubectl apply -f kubernetes/microservices/order-service/statefulset.yaml
+          echo "Checking EKS add-on status..."
+          for addon in vpc-cni kube-proxy coredns eks-pod-identity-agent aws-ebs-csi-driver; do
+            aws eks describe-addon \
+              --cluster-name "${CLUSTER_NAME}" \
+              --region "${AWS_REGION}" \
+              --addon-name "${addon}" \
+              --query 'addon.{Name:addonName,Version:addonVersion,Status:status,Health:health.issues}' \
+              --output table
+          done
 
-      - name: Wait for StatefulSets to be ready
-        if: inputs.action == 'apply'
-        run: |
-          echo "Waiting for user-service StatefulSet..."
-          kubectl rollout status statefulset/user-service -n user-service --timeout=10m
-          echo "Waiting for payment-service StatefulSet..."
-          kubectl rollout status statefulset/payment-service -n payment-service --timeout=10m
-          echo "Waiting for order-service StatefulSet..."
-          kubectl rollout status statefulset/order-service -n order-service --timeout=10m
+          kubectl rollout status daemonset/aws-node -n kube-system --timeout=10m
+          kubectl rollout status daemonset/kube-proxy -n kube-system --timeout=10m
+          kubectl rollout status deployment/coredns -n kube-system --timeout=10m
+          kubectl rollout status deployment/argocd-server -n argocd --timeout=10m
 
-      - name: Configure kubectl before destroy
+          if [ "${{ inputs.bootstrap_argocd }}" = "true" ]; then
+            kubectl get application.argoproj.io/root-app -n argocd -o wide
+          fi
+
+      - name: Terraform destroy cluster and AWS add-ons
         if: inputs.action == 'destroy'
         working-directory: terraform
-        run: |
-          set -euo pipefail
-          CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || true)
-          if [ -n "${CLUSTER_NAME}" ]; then
-            aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
-          else
-            echo "No cluster_name found in Terraform state; skipping Kubernetes cleanup."
-          fi
-
-      - name: Cleanup Kubernetes resources created by workflow
-        if: inputs.action == 'destroy'
-        run: |
-          set -euo pipefail
-
-          if ! kubectl cluster-info >/dev/null 2>&1; then
-            echo "Kubernetes cluster is not reachable; skipping Kubernetes manifest cleanup."
-            exit 0
-          fi
-
-          echo "Deleting microservices applied by this workflow"
-          kubectl delete -f kubernetes/microservices/order-service/statefulset.yaml --ignore-not-found=true --wait=true --timeout=10m || true
-          kubectl delete -f kubernetes/microservices/payment-service/statefulset.yaml --ignore-not-found=true --wait=true --timeout=10m || true
-          kubectl delete -f kubernetes/microservices/user-service/statefulset.yaml --ignore-not-found=true --wait=true --timeout=10m || true
-
-          echo "Deleting StatefulSet PVCs created from volume claim templates"
-          kubectl delete pvc -n order-service -l app=order-service --ignore-not-found=true --wait=true --timeout=10m || true
-          kubectl delete pvc -n payment-service -l app=payment-service --ignore-not-found=true --wait=true --timeout=10m || true
-          kubectl delete pvc -n user-service -l app=user-service --ignore-not-found=true --wait=true --timeout=10m || true
-
-          echo "Deleting storage resources applied by this workflow"
-          kubectl delete -f kubernetes/storage/storage-class.yaml --ignore-not-found=true --wait=true --timeout=10m || true
-
-          echo "Deleting Karpenter NodePool and EC2NodeClass applied by this workflow"
-          kubectl delete nodepool default --ignore-not-found=true --wait=true --timeout=10m || true
-          kubectl delete ec2nodeclass default --ignore-not-found=true --wait=true --timeout=10m || true
-
-      - name: Terraform Destroy
-        if: inputs.action == 'destroy'
-        working-directory: terraform
-        run: |
-          terraform init -reconfigure \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
-            -backend-config="key=${TF_STATE_KEY}" \
-            -backend-config="region=${AWS_REGION}" \
-            -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
-          terraform destroy -var="environment=${{ inputs.environment }}" -auto-approve
-
-      - name: Cleanup remote Terraform state file
-        if: inputs.action == 'destroy' && inputs.delete_state == 'true' && inputs.delete_state_confirm == 'CONFIRM'
-        run: |
-          set -euo pipefail
-          BUCKET=${TF_STATE_BUCKET}
-          REGION=${AWS_REGION}
-          PREFIX="${{ inputs.environment }}/eks/"
-
-          echo "Installing jq (if missing)"
-          sudo apt-get update && sudo apt-get install -y jq || true
-
-          echo "Deleting Terraform state objects under s3://${BUCKET}/${PREFIX}"
-          VER_STATUS=$(aws s3api get-bucket-versioning --bucket "$BUCKET" --region "$REGION" --output text --query 'Status' || echo "")
-          if [ "$VER_STATUS" = "Enabled" ] || [ "$VER_STATUS" = "Suspended" ]; then
-            echo "Bucket versioning enabled - deleting matching versions and delete markers"
-            aws s3api list-object-versions --bucket "$BUCKET" --prefix "$PREFIX" --region "$REGION" --output json \
-              | jq -c '.Versions[]?,.DeleteMarkers[]?' \
-              | while read item; do
-                  KEY=$(echo "$item" | jq -r '.Key')
-                  VER=$(echo "$item" | jq -r '.VersionId')
-                  echo "Deleting $KEY (version: $VER)"
-                  aws s3api delete-object --bucket "$BUCKET" --key "$KEY" --version-id "$VER" --region "$REGION" || true
-                done
-          fi
-
-          echo "Deleting current objects under ${PREFIX}"
-          aws s3 rm "s3://${BUCKET}/${PREFIX}" --recursive --region "$REGION" || true
+        run: terraform destroy -var="environment=${{ inputs.environment }}" -auto-approve

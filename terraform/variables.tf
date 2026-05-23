@@ -9,9 +9,9 @@ variable "cluster_name" {
 }
 
 variable "project_name" {
-  description = "Base project/application name used in shared resource names."
+  description = "Base project/platform name used in shared resource names."
   type        = string
-  default     = "microservices"
+  default     = "platform"
 }
 
 variable "kubernetes_version" {
@@ -44,6 +44,42 @@ variable "cluster_endpoint_public_access_cidrs" {
   default     = ["0.0.0.0/0"]
 }
 
+variable "argocd_chart_version" {
+  description = "Optional ArgoCD Helm chart version. Leave null to use the latest chart version available at apply time."
+  type        = string
+  default     = null
+}
+
+variable "argocd_root_app_enabled" {
+  description = "Create the ArgoCD app-of-apps root Application after ArgoCD is installed."
+  type        = bool
+  default     = true
+}
+
+variable "argocd_root_app_name" {
+  description = "Name of the ArgoCD root Application."
+  type        = string
+  default     = "root-app"
+}
+
+variable "argocd_root_app_repo_url" {
+  description = "Git repository URL that the ArgoCD root Application tracks."
+  type        = string
+  default     = "https://github.com/YOUR_ORG/platform-repo.git"
+}
+
+variable "argocd_root_app_target_revision" {
+  description = "Git revision that the ArgoCD root Application tracks."
+  type        = string
+  default     = "HEAD"
+}
+
+variable "argocd_root_app_path" {
+  description = "Path inside the Git repository containing child ArgoCD Applications."
+  type        = string
+  default     = "kubernetes/argocd/apps"
+}
+
 variable "environment" {
   description = "Environment (dev, staging, prod)"
   type        = string
@@ -53,54 +89,4 @@ variable "environment" {
     condition     = contains(["dev", "staging", "prod"], lower(var.environment))
     error_message = "Environment must be dev, staging, or prod."
   }
-}
-
-variable "rds_instance_class" {
-  description = "RDS instance type"
-  type        = string
-  default     = "db.t3.micro"
-}
-
-variable "rds_engine_version" {
-  description = "Optional RDS PostgreSQL engine version. Leave null to let AWS choose a currently supported default for the region."
-  type        = string
-  default     = null
-}
-
-variable "rds_allocated_storage" {
-  description = "Allocated storage in GB"
-  type        = number
-  default     = 20
-}
-
-variable "rds_db_name" {
-  description = "Database name"
-  type        = string
-  default     = "microservices"
-  sensitive   = false
-}
-
-variable "rds_username" {
-  description = "Master username for RDS"
-  type        = string
-  default     = "postgres"
-  sensitive   = true
-}
-
-variable "rds_password" {
-  description = "Master password for RDS"
-  type        = string
-  sensitive   = true
-}
-
-variable "backup_retention_days" {
-  description = "Backup retention period in days"
-  type        = number
-  default     = 7
-}
-
-variable "rds_deletion_protection" {
-  description = "Whether deletion protection is enabled for the RDS instance"
-  type        = bool
-  default     = false
 }

@@ -35,22 +35,6 @@ output "oidc_provider_arn" {
   value       = module.eks.oidc_provider_arn
 }
 
-# Karpenter
-output "karpenter_iam_role_arn" {
-  description = "ARN of the Karpenter controller IAM role"
-  value       = module.karpenter.iam_role_arn
-}
-
-output "karpenter_iam_role_name" {
-  description = "Name of the Karpenter controller IAM role"
-  value       = module.karpenter.iam_role_name
-}
-
-output "karpenter_node_iam_role_name" {
-  description = "Name of the Karpenter node IAM role used by EC2NodeClass"
-  value       = module.karpenter.node_iam_role_name
-}
-
 # Access Configuration
 output "configure_kubectl" {
   description = "Command to configure kubectl"
@@ -69,56 +53,13 @@ output "deployment_summary" {
       "aws-ebs-csi-driver"
     ]
     helm_releases = [
-      "karpenter",
-      "aws-load-balancer-controller",
-      "argocd",
-      "prometheus",
-      "loki",
-      "linkerd",
-      "jaeger"
+      "argocd"
     ]
+    argocd_root_app = var.argocd_root_app_enabled ? {
+      name            = var.argocd_root_app_name
+      repo_url        = var.argocd_root_app_repo_url
+      target_revision = var.argocd_root_app_target_revision
+      path            = var.argocd_root_app_path
+    } : null
   }
-}
-
-# RDS Database
-output "rds_endpoint" {
-  description = "RDS PostgreSQL endpoint"
-  value       = aws_db_instance.postgres.endpoint
-}
-
-output "rds_address" {
-  description = "RDS PostgreSQL address (without port)"
-  value       = aws_db_instance.postgres.address
-}
-
-output "rds_port" {
-  description = "RDS PostgreSQL port"
-  value       = aws_db_instance.postgres.port
-}
-
-output "rds_database_name" {
-  description = "RDS database name"
-  value       = aws_db_instance.postgres.db_name
-}
-
-output "rds_master_username" {
-  description = "RDS master username"
-  value       = aws_db_instance.postgres.username
-  sensitive   = true
-}
-
-output "rds_connection_string" {
-  description = "PostgreSQL connection string"
-  value       = "postgresql://${var.rds_username}:${var.rds_password}@${aws_db_instance.postgres.address}:${aws_db_instance.postgres.port}/${var.rds_db_name}"
-  sensitive   = true
-}
-
-output "rds_security_group_id" {
-  description = "RDS security group ID"
-  value       = aws_security_group.rds.id
-}
-
-output "rds_storage_encrypted" {
-  description = "Whether RDS storage is encrypted"
-  value       = aws_db_instance.postgres.storage_encrypted
 }

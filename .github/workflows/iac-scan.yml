@@ -1,4 +1,4 @@
-name: Trivy Security Scan
+name: IaC Security Scan
 
 on:
   workflow_dispatch:
@@ -19,16 +19,23 @@ on:
   pull_request:
     branches:
       - main
+    paths:
+      - '.github/workflows/**'
+      - 'kubernetes/**'
+      - 'terraform/**'
   push:
     branches:
       - main
+    paths:
+      - '.github/workflows/**'
+      - 'kubernetes/**'
+      - 'terraform/**'
 
 jobs:
-  trivy:
+  iac-scan:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
     env:
       TRIVY_SEVERITY: ${{ github.event_name == 'workflow_dispatch' && inputs.severity || 'CRITICAL,HIGH' }}
       TRIVY_EXIT_CODE: ${{ github.event_name == 'workflow_dispatch' && inputs.fail_on_findings == 'false' && '0' || '1' }}
@@ -36,39 +43,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build backend image
-        run: docker build -t full-platform-backend:scan backend
-
-      - name: Build frontend image
-        run: docker build -t full-platform-frontend:scan frontend
-
-      - name: Scan repository filesystem
+      - name: Scan infrastructure as code
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
-          scanners: vuln,secret,misconfig
+          scanners: misconfig,secret
           severity: ${{ env.TRIVY_SEVERITY }}
           exit-code: ${{ env.TRIVY_EXIT_CODE }}
           ignore-unfixed: true
-          format: table
-
-      - name: Scan backend image
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: full-platform-backend:scan
-          scanners: vuln,secret
-          severity: ${{ env.TRIVY_SEVERITY }}
-          exit-code: ${{ env.TRIVY_EXIT_CODE }}
-          ignore-unfixed: true
-          format: table
-
-      - name: Scan frontend image
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: full-platform-frontend:scan
-          scanners: vuln,secret
-          severity: ${{ env.TRIVY_SEVERITY }}
-          exit-code: ${{ env.TRIVY_EXIT_CODE }}
-          ignore-unfixed: true
+          skip-dirs: .git,terraform/.terraform
           format: table
