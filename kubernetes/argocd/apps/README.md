@@ -5,6 +5,6 @@ This directory exists so the default ArgoCD root app path is present in this rep
 For real workloads or optional platform add-ons, use a separate GitOps repository and set:
 
 ```hcl
-argocd_root_app_repo_url = "https://github.com/YOUR_ORG/addons-repo.git"
-argocd_root_app_path     = "kubernetes/argocd/apps"
+argocd_root_app_repo_url = "https://github.com/mahesh-newdevops/gitops-platform.git"
+argocd_root_app_path     = "argocd"
 ```

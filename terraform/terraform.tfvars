@@ -12,7 +12,7 @@ cluster_endpoint_public_access_cidrs = [
   "0.0.0.0/0"
 ]
 argocd_root_app_enabled         = true
-argocd_root_app_repo_url        = "https://github.com/YOUR_ORG/platform-repo.git"
-argocd_root_app_target_revision = "HEAD"
-argocd_root_app_path            = "kubernetes/argocd/apps"
+argocd_root_app_repo_url        = "https://github.com/mahesh-newdevops/gitops-platform.git"
+argocd_root_app_target_revision = "main"
+argocd_root_app_path            = "argocd"
 environment                     = "dev"

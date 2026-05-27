@@ -35,6 +35,31 @@ output "oidc_provider_arn" {
   value       = module.eks.oidc_provider_arn
 }
 
+output "aws_load_balancer_controller_role_arn" {
+  description = "IAM role ARN used by AWS Load Balancer Controller through EKS Pod Identity"
+  value       = aws_iam_role.aws_load_balancer_controller.arn
+}
+
+output "external_secrets_role_arn" {
+  description = "IAM role ARN used by External Secrets through EKS Pod Identity"
+  value       = aws_iam_role.external_secrets.arn
+}
+
+output "karpenter_controller_role_arn" {
+  description = "IAM role ARN used by Karpenter through EKS Pod Identity"
+  value       = module.karpenter.iam_role_arn
+}
+
+output "karpenter_node_role_name" {
+  description = "IAM role name used by nodes launched by Karpenter"
+  value       = module.karpenter.node_iam_role_name
+}
+
+output "karpenter_interruption_queue_name" {
+  description = "SQS interruption queue name used by Karpenter"
+  value       = module.karpenter.queue_name
+}
+
 # Access Configuration
 output "configure_kubectl" {
   description = "Command to configure kubectl"
@@ -55,6 +80,13 @@ output "deployment_summary" {
     helm_releases = [
       "argocd"
     ]
+    addon_iam = {
+      aws_load_balancer_controller_role_arn = aws_iam_role.aws_load_balancer_controller.arn
+      external_secrets_role_arn             = aws_iam_role.external_secrets.arn
+      karpenter_controller_role_arn         = module.karpenter.iam_role_arn
+      karpenter_node_role_name              = module.karpenter.node_iam_role_name
+      karpenter_interruption_queue_name     = module.karpenter.queue_name
+    }
     argocd_root_app = var.argocd_root_app_enabled ? {
       name            = var.argocd_root_app_name
       repo_url        = var.argocd_root_app_repo_url

@@ -65,19 +65,19 @@ variable "argocd_root_app_name" {
 variable "argocd_root_app_repo_url" {
   description = "Git repository URL that the ArgoCD root Application tracks."
   type        = string
-  default     = "https://github.com/YOUR_ORG/platform-repo.git"
+  default     = "https://github.com/mahesh-newdevops/gitops-platform.git"
 }
 
 variable "argocd_root_app_target_revision" {
   description = "Git revision that the ArgoCD root Application tracks."
   type        = string
-  default     = "HEAD"
+  default     = "main"
 }
 
 variable "argocd_root_app_path" {
   description = "Path inside the Git repository containing child ArgoCD Applications."
   type        = string
-  default     = "kubernetes/argocd/apps"
+  default     = "argocd"
 }
 
 variable "environment" {

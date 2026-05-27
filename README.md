@@ -32,9 +32,9 @@ Edit `terraform/terraform.tfvars` before applying:
 region                         = "ap-south-1"
 environment                    = "dev"
 cluster_name                   = "platform-eks"
-argocd_root_app_repo_url        = "https://github.com/YOUR_ORG/platform-repo.git"
-argocd_root_app_target_revision = "HEAD"
-argocd_root_app_path            = "kubernetes/argocd/apps"
+argocd_root_app_repo_url        = "https://github.com/mahesh-newdevops/gitops-platform.git"
+argocd_root_app_target_revision = "main"
+argocd_root_app_path            = "argocd"
 ```
 
 For an external add-ons repository, set `argocd_root_app_repo_url` to that repo URL and `argocd_root_app_path` to the folder that contains the child ArgoCD `Application` manifests.
