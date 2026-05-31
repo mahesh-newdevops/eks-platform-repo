@@ -327,6 +327,7 @@ module "karpenter" {
   iam_role_use_name_prefix   = false
   iam_policy_name            = "${local.cluster_name}-karpenter-controller"
   iam_policy_use_name_prefix = false
+  enable_inline_policy       = true
 
   node_iam_role_name            = "${local.cluster_name}-karpenter-node"
   node_iam_role_use_name_prefix = false
