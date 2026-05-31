@@ -21,14 +21,12 @@ on:
       - main
     paths:
       - '.github/workflows/**'
-      - 'kubernetes/**'
       - 'terraform/**'
   push:
     branches:
       - main
     paths:
       - '.github/workflows/**'
-      - 'kubernetes/**'
       - 'terraform/**'
 
 jobs:

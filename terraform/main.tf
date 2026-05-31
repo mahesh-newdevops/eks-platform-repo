@@ -126,6 +126,10 @@ resource "kubectl_manifest" "argocd_root_app" {
     metadata = {
       name      = var.argocd_root_app_name
       namespace = "argocd"
+
+      finalizers = [
+        "resources-finalizer.argocd.argoproj.io"
+      ]
     }
 
     spec = {

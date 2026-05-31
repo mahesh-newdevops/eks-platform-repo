@@ -4,13 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Action to perform'
+        description: 'Terraform action to perform'
         required: true
-        default: 'apply'
+        default: 'plan'
         type: choice
         options:
+          - plan
           - apply
           - destroy
+      layer:
+        description: 'Terraform layer/scope to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - cluster-foundation
+          - aws-addons
+          - compute
+          - argocd-bootstrap
       environment:
         description: 'Environment to deploy (dev|prod)'
         required: true
@@ -34,6 +46,11 @@ on:
         required: true
         default: 'terraform-locks'
         type: string
+      confirm_destroy:
+        description: 'Required for prod destroy. Type destroy-prod to continue.'
+        required: false
+        default: ''
+        type: string
       bootstrap_argocd:
         description: 'Create/update the ArgoCD root application after cluster apply'
         required: true
@@ -45,7 +62,7 @@ on:
       gitops_repo_url:
         description: 'GitOps repo URL that ArgoCD root application should track'
         required: false
-        default: ''
+        default: 'https://github.com/mahesh-newdevops/gitops-platform.git'
         type: string
       gitops_target_revision:
         description: 'Git revision for the GitOps root application'
@@ -55,12 +72,13 @@ on:
       gitops_root_path:
         description: 'Path inside the GitOps repo for the root app-of-apps'
         required: false
-        default: 'kubernetes/argocd/apps'
+        default: 'argocd'
         type: string
 
 jobs:
   cluster:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     env:
       TF_VAR_environment: ${{ inputs.environment }}
       TF_VAR_region: ${{ inputs.aws_region }}
@@ -110,6 +128,45 @@ jobs:
           echo "TF_VAR_argocd_root_app_repo_url=${GITOPS_REPO_URL}" >> "${GITHUB_ENV}"
           echo "Using ArgoCD root app source: ${GITOPS_REPO_URL}:${{ inputs.gitops_target_revision }}/${{ inputs.gitops_root_path }}"
 
+      - name: Resolve Terraform layer targets
+        run: |
+          set -euo pipefail
+
+          case "${{ inputs.layer }}" in
+            all)
+              TARGET_ARGS=""
+              ;;
+            cluster-foundation)
+              TARGET_ARGS="-target=aws_vpc.this -target=aws_internet_gateway.this -target=aws_subnet.public -target=aws_route_table.public -target=aws_route_table_association.public -target=module.eks.aws_eks_cluster.this -target=module.eks.aws_iam_openid_connect_provider.oidc_provider"
+              ;;
+            aws-addons)
+              TARGET_ARGS="-target=aws_iam_role.ebs_csi_driver -target=aws_iam_role_policy_attachment.ebs_csi_driver -target=module.eks.aws_eks_addon.before_compute -target=module.eks.aws_eks_addon.this"
+              ;;
+            compute)
+              TARGET_ARGS="-target=module.eks.module.eks_managed_node_group -target=aws_iam_role.aws_load_balancer_controller -target=aws_iam_policy.aws_load_balancer_controller -target=aws_iam_role_policy_attachment.aws_load_balancer_controller -target=aws_eks_pod_identity_association.aws_load_balancer_controller -target=aws_iam_role.external_secrets -target=aws_iam_policy.external_secrets -target=aws_iam_role_policy_attachment.external_secrets -target=aws_eks_pod_identity_association.external_secrets -target=module.karpenter"
+              ;;
+            argocd-bootstrap)
+              TARGET_ARGS="-target=helm_release.argocd -target=kubectl_manifest.argocd_root_app"
+              ;;
+            *)
+              echo "Unsupported layer: ${{ inputs.layer }}"
+              exit 1
+              ;;
+          esac
+
+          echo "TF_TARGET_ARGS=${TARGET_ARGS}" >> "${GITHUB_ENV}"
+          if [ -n "${TARGET_ARGS}" ]; then
+            echo "Using targeted Terraform scope for layer '${{ inputs.layer }}'. Run layer 'all' regularly to detect drift across the whole state."
+          else
+            echo "Using full Terraform state."
+          fi
+
+      - name: Block unsafe destroy
+        if: inputs.action == 'destroy' && inputs.environment == 'prod' && inputs.confirm_destroy != 'destroy-prod'
+        run: |
+          echo "Prod destroy requires confirm_destroy=destroy-prod."
+          exit 1
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
@@ -120,18 +177,24 @@ jobs:
             -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="key=${TF_STATE_KEY}" \
             -backend-config="region=${AWS_REGION}" \
-            -backend-config="dynamodb_table=${TF_LOCK_TABLE}"
+            -backend-config="dynamodb_table=${TF_LOCK_TABLE}" \
+            -backend-config="encrypt=true"
           terraform validate
 
-      - name: Terraform apply cluster and AWS add-ons
+      - name: Terraform plan
+        if: inputs.action == 'plan'
+        working-directory: terraform
+        run: terraform plan ${TF_TARGET_ARGS} -var="environment=${{ inputs.environment }}"
+
+      - name: Terraform apply
         if: inputs.action == 'apply'
         working-directory: terraform
         run: |
-          terraform plan -var="environment=${{ inputs.environment }}" -out=tfplan
+          terraform plan ${TF_TARGET_ARGS} -var="environment=${{ inputs.environment }}" -out=tfplan
           terraform apply -auto-approve tfplan
 
       - name: Check cluster nodes and AWS add-ons
-        if: inputs.action == 'apply'
+        if: inputs.action == 'apply' && (inputs.layer == 'all' || inputs.layer == 'aws-addons' || inputs.layer == 'argocd-bootstrap')
         working-directory: terraform
         run: |
           set -euo pipefail
@@ -139,30 +202,40 @@ jobs:
           CLUSTER_NAME=$(terraform output -raw cluster_name)
           aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
 
-          echo "Waiting for nodes to join and become Ready..."
-          kubectl wait --for=condition=Ready nodes --all --timeout=15m
-          kubectl get nodes -o wide
+          if [ "${{ inputs.layer }}" = "all" ] || [ "${{ inputs.layer }}" = "aws-addons" ]; then
+            echo "Waiting for nodes to join and become Ready..."
+            kubectl wait --for=condition=Ready nodes --all --timeout=15m
+            kubectl get nodes -o wide
 
-          echo "Checking EKS add-on status..."
-          for addon in vpc-cni kube-proxy coredns eks-pod-identity-agent aws-ebs-csi-driver; do
-            aws eks describe-addon \
-              --cluster-name "${CLUSTER_NAME}" \
-              --region "${AWS_REGION}" \
-              --addon-name "${addon}" \
-              --query 'addon.{Name:addonName,Version:addonVersion,Status:status,Health:health.issues}' \
-              --output table
-          done
+            echo "Checking EKS add-on status..."
+            for addon in vpc-cni kube-proxy coredns eks-pod-identity-agent aws-ebs-csi-driver; do
+              aws eks describe-addon \
+                --cluster-name "${CLUSTER_NAME}" \
+                --region "${AWS_REGION}" \
+                --addon-name "${addon}" \
+                --query 'addon.{Name:addonName,Version:addonVersion,Status:status,Health:health.issues}' \
+                --output table
+            done
 
-          kubectl rollout status daemonset/aws-node -n kube-system --timeout=10m
-          kubectl rollout status daemonset/kube-proxy -n kube-system --timeout=10m
-          kubectl rollout status deployment/coredns -n kube-system --timeout=10m
-          kubectl rollout status deployment/argocd-server -n argocd --timeout=10m
+            kubectl rollout status daemonset/aws-node -n kube-system --timeout=10m
+            kubectl rollout status daemonset/kube-proxy -n kube-system --timeout=10m
+            kubectl rollout status deployment/coredns -n kube-system --timeout=10m
+          fi
 
-          if [ "${{ inputs.bootstrap_argocd }}" = "true" ]; then
+          if [ "${{ inputs.layer }}" = "all" ] || [ "${{ inputs.layer }}" = "argocd-bootstrap" ]; then
+            kubectl rollout status deployment/argocd-server -n argocd --timeout=10m
+          fi
+
+          if [ "${{ inputs.bootstrap_argocd }}" = "true" ] && { [ "${{ inputs.layer }}" = "all" ] || [ "${{ inputs.layer }}" = "argocd-bootstrap" ]; }; then
             kubectl get application.argoproj.io/root-app -n argocd -o wide
           fi
 
-      - name: Terraform destroy cluster and AWS add-ons
+      - name: Terraform destroy plan
         if: inputs.action == 'destroy'
         working-directory: terraform
-        run: terraform destroy -var="environment=${{ inputs.environment }}" -auto-approve
+        run: terraform plan -destroy ${TF_TARGET_ARGS} -var="environment=${{ inputs.environment }}"
+
+      - name: Terraform destroy
+        if: inputs.action == 'destroy'
+        working-directory: terraform
+        run: terraform destroy ${TF_TARGET_ARGS} -var="environment=${{ inputs.environment }}" -auto-approve
